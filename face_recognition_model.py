@@ -1,5 +1,6 @@
 
 from pathlib import Path
+import shutil
 
 import cv2
 import numpy as np
@@ -8,18 +9,48 @@ from insightface.app import FaceAnalysis
 BASE_DIR = Path(__file__).resolve().parent
 FACE_FOLDER = BASE_DIR / "data" / "faces"
 
-# Prototype threshold only. Validate it with genuine and unknown faces.
+# Prototype threshold only. Validate with genuine and unknown faces.
 SIMILARITY_THRESHOLD = 0.45
 
-print("Loading InsightFace model...")
 
-model = FaceAnalysis(
-    name="buffalo_l",
-    providers=["CPUExecutionProvider"]
-)
-model.prepare(ctx_id=-1, det_size=(320, 320))
+def load_face_model():
+    """Load InsightFace, retrying once after a corrupt ONNX cache."""
+    model_dir = Path.home() / ".insightface" / "models" / "buffalo_l"
 
-print("InsightFace model loaded successfully!")
+    for attempt in range(2):
+        print(f"Loading InsightFace model (attempt {attempt + 1}/2)...")
+
+        try:
+            face_model = FaceAnalysis(
+                name="buffalo_l",
+                providers=["CPUExecutionProvider"]
+            )
+            face_model.prepare(ctx_id=-1, det_size=(320, 320))
+            print("InsightFace model loaded successfully!")
+            return face_model
+
+        except Exception as error:
+            message = str(error).lower()
+            corrupt_model = (
+                "invalid_protobuf" in message
+                or "protobuf parsing failed" in message
+            )
+
+            if not corrupt_model or attempt == 1:
+                raise
+
+            print("Corrupt ONNX cache detected.")
+
+            # Remove only the cached buffalo_l model.
+            if model_dir.exists():
+                shutil.rmtree(model_dir)
+
+            # The next attempt lets InsightFace download the model again.
+
+    raise RuntimeError("Unable to load the InsightFace model.")
+
+
+model = load_face_model()
 
 
 def get_largest_face(image):
@@ -40,9 +71,13 @@ def get_largest_face(image):
 
 def load_face_database():
     """
-    Load saved face images.
-    Expected layout: data/faces/<student_id>/face_*.jpg
-    Returns {student_id: representative_embedding}.
+    Load enrolled face images.
+
+    Expected layout:
+        data/faces/<student_id>/face_*.jpg
+
+    Returns:
+        Dictionary mapping student IDs to representative embeddings.
     """
     face_database = {}
 
@@ -57,8 +92,10 @@ def load_face_database():
         try:
             student_id = int(student_folder.name)
         except ValueError:
-            print("Skipping folder without numeric student ID:",
-                  student_folder.name)
+            print(
+                "Skipping folder without numeric student ID:",
+                student_folder.name
+            )
             continue
 
         embeddings = []
@@ -80,7 +117,6 @@ def load_face_database():
             embeddings.append(embedding)
 
         if embeddings:
-            # Average embeddings and normalize the resulting vector.
             mean_embedding = np.mean(embeddings, axis=0)
             norm = np.linalg.norm(mean_embedding)
 
@@ -95,17 +131,15 @@ def load_face_database():
     return face_database
 
 
-def recognize_face(frame, face_database=None,
-                   threshold=SIMILARITY_THRESHOLD):
+def recognize_face(
+    frame,
+    face_database=None,
+    threshold=SIMILARITY_THRESHOLD
+):
     """
     Match the largest face in a BGR image frame.
 
-    Returns:
-        {
-            "student_id": int or None,
-            "similarity": float or None,
-            "message": str
-        }
+    Returns a dictionary with student_id, similarity, and message.
     """
     if face_database is None:
         face_database = load_face_database()
