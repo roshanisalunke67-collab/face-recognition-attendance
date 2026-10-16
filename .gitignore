@@ -4,11 +4,9 @@ __pycache__/
 .env
 .env.*
 !.env.example
-attendance.db
-attendance.db-shm
-attendance.db-wal
-data/faces/
-*.log
 
 *.db
 *.db-*
+data/faces/
+
+*.log
